@@ -10,9 +10,10 @@ python -m pytest tests/test_modeling*.py \
   tests/test_billed_runner_failures.py tests/test_billed_failure_persistence.py -q
 ```
 
-Result: **172 passed**. Subsequent missing-constraint-book hardening passed the
-affected integration, literature, and constraint suites. Compilation and
-`git diff --check` also passed.
+Result after remote integration: **214 passed**. The final scheduler shutdown
+hardening also passed its focused suite of ten tests. Compilation and
+`git diff --check` passed. Remote tests use a fake scheduler and fake transport;
+they do not claim live Gautschi commissioning.
 
 The numerical demonstration completed four MAP screens, three MCMC fits, and two
 SMC confirmations. It selected the quadratic synthetic model, then opened a
@@ -21,10 +22,11 @@ Real numerical tests compare posterior moments with the analytic Gaussian result
 this reference is available only because the example is deliberately simple.
 
 The Shinka evaluator CLI produced valid standard result files from a source
-snapshot. The installed `shinka_model` command and the search launcher's dry-run
-were checked. The live Codex search was not launched; subscription authentication,
-model access, and a production scientific adapter require commissioning for the
-target campaign.
+snapshot. The installed `shinka_model` command and launcher were checked. A
+subsequent real subscription-Codex demonstration completed three proposals and
+ten local synthetic calibrations, then stopped. See [DEMO_REPORT.md](DEMO_REPORT.md).
+Live cluster submission and the NHP scientific adapter still require target-campaign
+commissioning.
 
 The new tests exercise stage quotas, cache identity, failure charges, process
 timeouts and cleanup, diversity promotion, calibration-method separation,

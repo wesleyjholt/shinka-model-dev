@@ -14,3 +14,8 @@ posterior artifacts are not part of this source distribution.
 
 See [MODEL_DEVELOPMENT.md](MODEL_DEVELOPMENT.md) for the comparison contract,
 calibration stages, exploration policy, reports, and integration limits.
+
+The fork also includes a durable remote work controller, profile-managed
+cluster-slurm adapter, bounded numerical worker, and an injected Shinka scheduler.
+See [REMOTE_EXECUTION.md](REMOTE_EXECUTION.md) and the completed
+[synthetic autoresearch demonstration](DEMO_REPORT.md).

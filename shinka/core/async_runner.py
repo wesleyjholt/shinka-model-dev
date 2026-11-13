@@ -284,6 +284,7 @@ class ShinkaEvolveRunner:
         debug: bool = False,
         init_program_str: Optional[str] = None,
         evaluate_str: Optional[str] = None,
+        scheduler: Optional[Any] = None,
     ):
         """Initialize async evolution runner.
 
@@ -302,7 +303,12 @@ class ShinkaEvolveRunner:
                 (will be saved to results dir and path updated in evo_config)
             evaluate_str: Optional string content for evaluate script
                 (will be saved to results dir and path updated in job_config)
+            scheduler: Optional trusted scheduler implementing the evaluation
+                interface. Remote calibration requires job_config.time=None.
         """
+        if scheduler is not None and getattr(scheduler, "job_type", None) == "remote_calibration":
+            if not isinstance(job_config, LocalJobConfig) or job_config.time is not None:
+                raise ValueError("Remote calibration scheduler requires LocalJobConfig(time=None); remote queue/runtime limits are separate")
         pricing_snapshot = (
             load_run_pricing_snapshot(Path(evo_config.results_dir))
             if evo_config.results_dir is not None
@@ -474,7 +480,7 @@ class ShinkaEvolveRunner:
             self.embedding_client = None
 
         # Job scheduler
-        self.scheduler = JobScheduler(
+        self.scheduler = scheduler if scheduler is not None else JobScheduler(
             job_type=evo_config.job_type, config=job_config, verbose=verbose
         )
 
