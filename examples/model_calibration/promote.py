@@ -8,6 +8,7 @@ from pathlib import Path
 
 from shinka.modeling import CalibrationPipeline, EvaluationRequest, PromotionPolicy
 from shinka.modeling.reports import write_report
+from shinka.modeling.constraints import ConstraintPending
 from .calibrate import calibrate
 from .evaluate import open_ledger
 from .run import finalize as finalize_campaign, stages
@@ -50,10 +51,22 @@ def run(ledger_root: str | Path, *, minimum_screens: int = 10,
                 objective_id=base.objective_id, evaluator_id=base.evaluator_id,
                 context=base.context,
             )
-            pipeline.evaluate(request, calibrate)
+            try:
+                pipeline.evaluate(request, calibrate)
+            except ConstraintPending:
+                # A request for permission must not hold up other candidates.
+                continue
     records = ledger.records()
     if finalize:
-        return finalize_campaign(records, root, make_plot=make_plot, usage=ledger.usage())
+        eligible = []
+        for record in records:
+            try:
+                if pipeline.constraints is not None:
+                    pipeline.constraints.assert_allowed(record.request.candidate.source_sha)
+                eligible.append(record)
+            except ConstraintPending:
+                continue
+        return finalize_campaign(eligible, root, make_plot=make_plot, usage=ledger.usage())
     report = write_report(records, root, usage=ledger.usage())
     return {"status": "promotion_complete", "report": str(report), "usage": ledger.usage(),
             "final_test_used": False}
