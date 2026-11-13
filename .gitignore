@@ -198,3 +198,7 @@ cython_debug/
 
 # Local browser automation state
 .playwright-cli/
+
+# Private scientific campaign state and local handoff notes
+model-runs/
+.agent-session-summary.tsv

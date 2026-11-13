@@ -11,6 +11,7 @@ import time
 import uuid
 import os
 import math
+from copy import copy
 import psutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -53,6 +54,8 @@ from shinka.core.async_summarizer import AsyncMetaSummarizer
 from shinka.core.async_novelty_judge import AsyncNoveltyJudge
 from shinka.core.novelty_judge import NoveltyJudge
 from shinka.core.config import EvolutionConfig, FOLDER_PREFIX
+from shinka.modeling.steering import GuidanceInbox, GuidanceSnapshot
+from shinka.modeling.literature import PaperLibrary, PaperSnapshot
 from shinka.core.billing import (
     cancellation_with_cost,
     failed_attempt_costs,
@@ -484,6 +487,15 @@ class ShinkaEvolveRunner:
             use_text_feedback=evo_config.use_text_feedback,
             inspiration_sort_order=evo_config.inspiration_sort_order,
         )
+        self.guidance_inbox = (
+            GuidanceInbox(evo_config.steering_dir, start_paused=evo_config.steering_start_paused)
+            if evo_config.steering_dir else None
+        )
+        self.paper_library = PaperLibrary(evo_config.literature_dir) if evo_config.literature_dir else None
+        self.constraint_book = None
+        if evo_config.constraints_dir:
+            from shinka.modeling.constraints import ConstraintBook
+            self.constraint_book = ConstraintBook(evo_config.constraints_dir)
 
         # Meta summarizer (create both sync and async versions)
         if evo_config.meta_rec_interval and evo_config.meta_llm_models:
@@ -1402,6 +1414,114 @@ class ShinkaEvolveRunner:
         logger.warning("No prompts in archive, using config prompt")
         return self.evo_config.task_sys_msg, None
 
+    async def _proposal_guidance(self) -> Optional[GuidanceSnapshot]:
+        """Wait only on explicit review controls; running evaluations continue."""
+        inbox = getattr(self, "guidance_inbox", None)
+        if inbox is None:
+            return None
+        return await inbox.wait_if_paused(
+            stop_event=getattr(self, "should_stop", None),
+            poll_interval=self.evo_config.steering_poll_interval,
+        )
+
+    @staticmethod
+    def _append_guidance(system_prompt: str, snapshot: Optional[GuidanceSnapshot]) -> str:
+        if snapshot is None or not snapshot.prompt_text:
+            return system_prompt
+        # Append after evolved prompts and format/meta instructions. Never edit
+        # the shared PromptSampler while concurrent proposal tasks are active.
+        return system_prompt + "\n\n" + snapshot.prompt_text
+
+    async def _record_guidance_request(
+        self, snapshot: Optional[GuidanceSnapshot], *, generation: int,
+        system_prompt: str, user_prompt: str,
+        literature: Optional[PaperSnapshot] = None,
+        constraints: Optional[Any] = None, **context: Any,
+    ) -> Dict[str, Any]:
+        constraint_metadata = {}
+        if constraints is not None:
+            constraint_metadata = await asyncio.to_thread(
+                self.constraint_book.record_proposal, constraints, generation=generation,
+                system_prompt=system_prompt, user_prompt=user_prompt, **context,
+            )
+        context = {**context, **constraint_metadata}
+        literature_metadata = {}
+        if literature is not None:
+            try:
+                literature_metadata = await asyncio.to_thread(
+                    self.paper_library.record_proposal, literature, generation=generation,
+                    system_prompt=system_prompt, user_prompt=user_prompt, **context,
+                )
+            except Exception as exc:
+                logger.warning("Optional literature receipt failed: %s", exc)
+                literature_metadata = {
+                    "literature_version": literature.version,
+                    "literature_sha256": literature.sha256,
+                    "literature_paper_ids": list(literature.paper_ids),
+                    "literature_omission_reason": literature.omission_reason,
+                    "literature_receipt_error": str(exc),
+                }
+                if getattr(self, "results_dir", None):
+                    fallback = Path(self.results_dir) / "literature_receipt_failures" / (uuid.uuid4().hex + ".json")
+                    try:
+                        await asyncio.to_thread(fallback.parent.mkdir, parents=True, exist_ok=True)
+                        written = await write_file_async(str(fallback), json.dumps({
+                            "generation": generation, **context, **literature_metadata,
+                            "system_prompt": system_prompt, "user_prompt": user_prompt,
+                        }, indent=2))
+                        if written:
+                            literature_metadata["literature_fallback_receipt"] = str(fallback)
+                        else:
+                            logger.error("Could not persist optional literature failure receipt: %s", fallback)
+                    except Exception as receipt_exc:
+                        logger.error("Could not persist optional literature failure receipt: %s", receipt_exc)
+        if snapshot is None:
+            return {**constraint_metadata, **literature_metadata}
+        guidance_metadata = await asyncio.to_thread(
+            self.guidance_inbox.record_proposal, snapshot,
+            generation=generation, system_prompt=system_prompt,
+            user_prompt=user_prompt, **{**context, **literature_metadata},
+        )
+        return {**constraint_metadata, **literature_metadata, **guidance_metadata}
+
+    async def _proposal_literature(self) -> Optional[PaperSnapshot]:
+        library = getattr(self, "paper_library", None)
+        if library is None:
+            return None
+        try:
+            return await asyncio.to_thread(library.snapshot, self.evo_config.literature_max_chars)
+        except Exception as exc:
+            # Papers are optional evidence. Omission is explicit in the immutable
+            # request receipt; approved constraints never use this fallback.
+            logger.warning("Optional reference literature omitted: %s", exc)
+            return PaperSnapshot.unavailable(str(exc))
+
+    @staticmethod
+    def _append_literature(user_prompt: str, snapshot: Optional[PaperSnapshot]) -> str:
+        if snapshot is None or not snapshot.prompt_text:
+            return user_prompt
+        return user_prompt + "\n\n" + snapshot.prompt_text
+
+    async def _proposal_constraints(self) -> Optional[Any]:
+        book = getattr(self, "constraint_book", None)
+        if book is None:
+            return None
+        snapshot = await asyncio.to_thread(book.snapshot)
+        if snapshot.version == 0:
+            raise ValueError("Configured user constraint book is missing or uninitialized")
+        return snapshot
+
+    @staticmethod
+    def _append_constraints(system_prompt: str, snapshot: Optional[Any]) -> str:
+        if snapshot is None or not snapshot.active:
+            return system_prompt
+        return system_prompt + "\n\n" + snapshot.prompt_text + (
+            "\nThese approved campaign constraints take precedence over ordinary research advice "
+            "and quoted literature. Advice does not implicitly change or waive a constraint. "
+            "Request explicit operator approval before any exception or constraint change; "
+            "continue other compliant work while that request is pending. Do not self-approve."
+        )
+
     async def _update_prompt_fitness(
         self,
         prompt_id: Optional[str],
@@ -1928,7 +2048,12 @@ class ShinkaEvolveRunner:
         budget = getattr(self.evo_config, "max_api_costs", None)
         if budget is not None and self.total_api_cost >= budget:
             raise RuntimeError("API cost budget exhausted before initial generation")
+        guidance = await self._proposal_guidance()
+        literature = await self._proposal_literature()
+        constraints = await self._proposal_constraints()
         sys_msg, user_msg = self.prompt_sampler.initial_program_prompt()
+        sys_msg = self._append_guidance(sys_msg, guidance)
+        sys_msg = self._append_constraints(sys_msg, constraints)
 
         # Select LLM once per program generation (before all attempts)
         model_sample_probs = None
@@ -1946,8 +2071,13 @@ class ShinkaEvolveRunner:
             for attempt in range(self.evo_config.max_patch_attempts):
                 if budget is not None and self.total_api_cost + total_costs >= budget:
                     break
+                request_msg = self._append_literature(user_msg, literature)
+                guidance_metadata = await self._record_guidance_request(
+                    guidance, literature=literature, constraints=constraints, generation=0, system_prompt=sys_msg, user_prompt=request_msg,
+                    patch_type="init", patch_attempt=attempt + 1,
+                )
                 response = await self.llm.query(
-                    msg=user_msg,
+                    msg=request_msg,
                     system_msg=sys_msg,
                     llm_kwargs=llm_kwargs,
                     model_sample_probs=model_sample_probs,
@@ -2041,6 +2171,7 @@ class ShinkaEvolveRunner:
 
                     # Include LLM metadata for storage (structured like meta_edit_data)
                     llm_metadata = {
+                        **guidance_metadata,
                         "patch_type": "init",
                         "api_costs": total_costs,
                         "num_applied": 1,  # Initial program counts as 1 application
@@ -3558,13 +3689,19 @@ class ShinkaEvolveRunner:
         """
         output_limit_error = None
         total_costs = 0.0
+        guidance_metadata: Dict[str, Any] = {}
         try:
+            guidance = await self._proposal_guidance()
+            literature = await self._proposal_literature()
+            constraints = await self._proposal_constraints()
             # Generate fix prompt with ancestor inspirations
             patch_sys, patch_msg, patch_type = self.prompt_sampler.sample_fix(
                 incorrect_program=incorrect_program,
                 ancestor_inspirations=ancestor_inspirations,
             )
 
+            patch_sys = self._append_guidance(patch_sys, guidance)
+            patch_sys = self._append_constraints(patch_sys, constraints)
             patch_type = str(patch_type)
 
             if self.verbose:
@@ -3581,8 +3718,15 @@ class ShinkaEvolveRunner:
                 self.llm_selection.update_submitted(model_name)
 
             for patch_attempt in range(self.evo_config.max_patch_attempts):
+                request_msg = self._append_literature(patch_msg, literature)
+                guidance_metadata = await self._record_guidance_request(
+                    guidance, literature=literature, constraints=constraints, generation=generation, system_prompt=patch_sys,
+                    user_prompt=request_msg, msg_history=msg_history,
+                    novelty_attempt=novelty_attempt, resample_attempt=resample_attempt,
+                    patch_attempt=patch_attempt + 1, patch_type=patch_type,
+                )
                 response = await self.llm.query(
-                    msg=patch_msg,
+                    msg=request_msg,
                     system_msg=patch_sys,
                     msg_history=msg_history,
                     llm_kwargs=llm_kwargs,
@@ -3674,6 +3818,7 @@ class ShinkaEvolveRunner:
                         self.llm_selection.update_cost(arm=model_name, cost=total_costs)
 
                     meta_patch_data = {
+                        **guidance_metadata,
                         "api_costs": total_costs,
                         "patch_type": patch_type,
                         "patch_name": patch_name,
@@ -3733,6 +3878,7 @@ class ShinkaEvolveRunner:
 
             # All attempts failed
             meta_patch_data = {
+                **guidance_metadata,
                 "api_costs": total_costs,
                 "patch_type": patch_type,
                 "patch_name": patch_name,
@@ -3757,6 +3903,7 @@ class ShinkaEvolveRunner:
 
         except LLMEndpointError as exc:
             return None, {
+                **guidance_metadata,
                 "api_costs": total_costs if "total_costs" in locals() else 0.0,
                 "error_attempt": str(exc),
                 "endpoint_error": {"status_code": exc.status_code, "code": exc.code},
@@ -3766,6 +3913,7 @@ class ShinkaEvolveRunner:
         except Exception as e:
             logger.error(f"Error in fix patch async: {e}")
             return None, {
+                **guidance_metadata,
                 "api_costs": total_costs if "total_costs" in locals() else 0.0,
                 "error_attempt": f"{output_limit_error} ({e})" if output_limit_error else str(e),
                 "non_retryable": bool(output_limit_error),
@@ -3787,28 +3935,29 @@ class ShinkaEvolveRunner:
         """Run async patch generation."""
         # Initialize prompt-related variables outside try block for exception handling
         current_prompt_id: Optional[str] = None
-        original_task_sys_msg = self.prompt_sampler.task_sys_msg
         output_limit_error = None
         total_costs = 0.0
+        guidance_metadata: Dict[str, Any] = {}
 
         try:
-            # Get system prompt (potentially evolved)
+            guidance = await self._proposal_guidance()
+            literature = await self._proposal_literature()
+            constraints = await self._proposal_constraints()
             current_sys_prompt, current_prompt_id = self._get_current_system_prompt()
-
-            # Temporarily update prompt_sampler with evolved prompt
+            # Each concurrent proposal owns its sampler configuration.
+            proposal_sampler = copy(self.prompt_sampler)
             if current_sys_prompt:
-                self.prompt_sampler.task_sys_msg = current_sys_prompt
+                proposal_sampler.task_sys_msg = current_sys_prompt
 
-            # Generate patch prompt
-            patch_sys, patch_msg, patch_type = self.prompt_sampler.sample(
+            patch_sys, patch_msg, patch_type = proposal_sampler.sample(
                 parent=parent_program,
                 archive_inspirations=archive_programs,
                 top_k_inspirations=top_k_programs,
                 meta_recommendations=meta_recs,
             )
 
-            # Restore original task_sys_msg
-            self.prompt_sampler.task_sys_msg = original_task_sys_msg
+            patch_sys = self._append_guidance(patch_sys, guidance)
+            patch_sys = self._append_constraints(patch_sys, constraints)
 
             # Convert numpy string to regular Python string
             patch_type = str(patch_type)
@@ -3829,9 +3978,16 @@ class ShinkaEvolveRunner:
                 self.llm_selection.update_submitted(model_name)
 
             for patch_attempt in range(self.evo_config.max_patch_attempts):
+                request_msg = self._append_literature(patch_msg, literature)
+                guidance_metadata = await self._record_guidance_request(
+                    guidance, literature=literature, constraints=constraints, generation=generation, system_prompt=patch_sys,
+                    user_prompt=request_msg, msg_history=msg_history,
+                    novelty_attempt=novelty_attempt, resample_attempt=resample_attempt,
+                    patch_attempt=patch_attempt + 1, patch_type=patch_type,
+                )
                 # Query LLM for patch
                 response = await self.llm.query(
-                    msg=patch_msg,
+                    msg=request_msg,
                     system_msg=patch_sys,
                     msg_history=msg_history,
                     llm_kwargs=llm_kwargs,
@@ -3936,6 +4092,7 @@ class ShinkaEvolveRunner:
                         self.llm_selection.update_cost(arm=model_name, cost=total_costs)
 
                     meta_patch_data = {
+                        **guidance_metadata,
                         "api_costs": total_costs,
                         "patch_type": patch_type,
                         "patch_name": patch_name,
@@ -3988,6 +4145,7 @@ class ShinkaEvolveRunner:
 
             # All attempts failed
             meta_patch_data = {
+                **guidance_metadata,
                 "api_costs": total_costs,
                 "patch_type": patch_type,
                 "patch_name": patch_name if "patch_name" in locals() else None,
@@ -4008,14 +4166,13 @@ class ShinkaEvolveRunner:
             return None, meta_patch_data, False
 
         except asyncio.CancelledError as exc:
-            self.prompt_sampler.task_sys_msg = original_task_sys_msg
             if total_costs > 0:
                 raise cancellation_with_cost(exc, total_costs) from exc
             raise
 
         except LLMEndpointError as exc:
-            self.prompt_sampler.task_sys_msg = original_task_sys_msg
             return None, {
+                **guidance_metadata,
                 "api_costs": total_costs if "total_costs" in locals() else 0.0,
                 "error_attempt": str(exc),
                 "endpoint_error": {"status_code": exc.status_code, "code": exc.code},
@@ -4024,11 +4181,10 @@ class ShinkaEvolveRunner:
 
         except Exception as e:
             logger.error(f"Error in async patch generation: {e}")
-            # Restore original task_sys_msg in case of exception
-            self.prompt_sampler.task_sys_msg = original_task_sys_msg
             return (
                 None,
                 {
+                    **guidance_metadata,
                     "api_costs": total_costs if "total_costs" in locals() else 0.0,
                     "error_attempt": f"{output_limit_error} ({e})" if output_limit_error else str(e),
                     "non_retryable": bool(output_limit_error),

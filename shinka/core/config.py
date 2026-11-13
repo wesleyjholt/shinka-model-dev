@@ -41,6 +41,18 @@ class EvolutionConfig:
     init_program_path: Optional[str] = "initial.py"
     results_dir: Optional[str] = None
 
+    # Optional asynchronous scientific guidance. Questions do not pause a run.
+    # start_paused adds an explicit initial review checkpoint; a resume message
+    # releases it. Subsequent pause/resume messages act at proposal boundaries.
+    steering_dir: Optional[str] = None
+    steering_start_paused: bool = False
+    steering_poll_interval: float = 0.25
+    # Curated local papers. Only bounded author-visible excerpts enter prompts.
+    literature_dir: Optional[str] = None
+    literature_max_chars: int = 24000
+    # Optional approved hard constraints; ordinary steering cannot waive them.
+    constraints_dir: Optional[str] = None
+
     # Optional W&B logging is additive to the existing database/WebUI logging.
     enable_wandb_logging: bool = False
     wandb_project: Optional[str] = "shinka-evolve"

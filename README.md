@@ -1,3 +1,5 @@
+> **Model development fork:** Adds staged calibration, scientific reports, and asynchronous human guidance. Start with [MODEL_DEVELOPMENT.md](MODEL_DEVELOPMENT.md). The upstream ShinkaEvolve documentation follows below. The new calibration demo uses synthetic data and does not call an LLM.
+
 <h1 align="center">
   <a href="https://github.com/SakanaAI/ShinkaEvolve"><img src="https://raw.githubusercontent.com/SakanaAI/ShinkaEvolve/main/shinka/favicon.png" width="180" /></a><br>
   <b><code>ShinkaEvolve</code>: Towards Open-Ended and Sample-Efficient Program Evolution 🧬</b><br>
