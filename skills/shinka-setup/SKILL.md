@@ -1,6 +1,6 @@
 ---
 name: shinka-setup
-description: Create ShinkaEvolve task scaffolds from a target directory and task description, producing `evaluate.py` and `initial.<ext>` (multi-language). Use when asked to set up new ShinkaEvolve tasks, evaluation harnesses, or baseline programs for ShinkaEvolve.
+description: Create ShinkaEvolve task scaffolds from a target directory and task description, producing an evaluation script and an initial program in the chosen language. Use when asked to set up new ShinkaEvolve tasks, evaluation harnesses, or baseline programs for ShinkaEvolve.
 ---
 
 # Shinka Task Setup Skill
@@ -12,6 +12,13 @@ Invoke this skill when the user:
 - No `evaluate.py` and `initial.<ext>` exist in the working directory
 
 ## User Inputs
+For a new scientific model-development or calibration campaign, first follow
+[shinka-model-development](../shinka-model-development/SKILL.md). Use its short,
+adaptive interview and approved campaign specification to supply the inputs below;
+do not ask the scientist a second generic questionnaire. Reuse existing answers
+and an unchanged approved plan. This requirement does not apply to unrelated
+program optimization.
+
 - Task description + success criteria
 - Target language for `initial.<ext>` (if omitted, default to Python)
 - What parts of the script to optimize

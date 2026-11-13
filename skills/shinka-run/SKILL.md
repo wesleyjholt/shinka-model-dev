@@ -1,6 +1,6 @@
 ---
 name: shinka-run
-description: Run existing ShinkaEvolve tasks with the `shinka_run` CLI from a task directory (`evaluate.py` + `initial.<ext>`). Use when an agent needs to launch async evolution runs quickly with required `--results_dir`, generation count, and strict namespaced keyword overrides.
+description: Run existing ShinkaEvolve tasks with the shinka_run CLI from a task directory containing an evaluator and initial program. Use when an agent needs to launch async evolution with an explicit results directory, generation count, and strict namespaced keyword overrides.
 ---
 
 # Shinka Run CLI Skill
@@ -22,6 +22,15 @@ Repo and documentation: https://github.com/SakanaAI/ShinkaEvolve
 Paper: https://arxiv.org/abs/2212.04180
 
 ## Workflow
+
+For scientific model development or calibration, first verify the approved
+specification from [shinka-model-development](../shinka-model-development/SKILL.md).
+If it is missing, follow that skill before launching; an evaluator or run directory
+is not evidence of approval. Reuse an unchanged approved campaign without a new
+interview. Its approved execution scope satisfies the confirmation steps below:
+do not repeat questions about agreed settings or stop approved autonomous batches.
+Obtain approval only for changes outside that scope. This interview requirement
+does not apply to unrelated program optimization.
 
 1. Inspect task directory
 ```bash

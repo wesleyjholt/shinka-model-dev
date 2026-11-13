@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shinka Scientific Model Development"
+  short_description: "Brief scientist interview and approved research plan"
+  default_prompt: "Use $shinka-model-development to interview me briefly and propose a scientific model-development campaign with calibration, evaluation, and exploration choices."

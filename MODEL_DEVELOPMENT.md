@@ -6,6 +6,15 @@ open: the scientist supplies an executable model interface and a trusted evaluat
 The polynomial example is a small test of that interface, not a restriction on the
 models the framework can explore.
 
+## Before a scientific campaign
+
+Use the [scientist interview skill](skills/shinka-model-development/SKILL.md).
+It asks at most 3–5 adaptive starter questions with project-specific choices and
+free-text answers. Wording varies; coverage of purpose, prediction priorities,
+evidence, optional constraints, and practical limits is required. The agent then
+proposes the objective, calibration and validation plan, and budgets for the
+scientist's approval. Existing answers and approved continuations are reused.
+
 ## How calibration effort is allocated
 
 1. **Screen broadly.** Use MAP or another cheap fit to test many hypotheses.

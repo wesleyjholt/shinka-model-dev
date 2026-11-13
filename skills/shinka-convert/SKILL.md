@@ -23,6 +23,13 @@ Do not use this skill when:
 - `evaluate.py` and `initial.<ext>` already exist and the user only wants to launch evolution; use `shinka-run`
 
 ## User Inputs
+When this conversion starts a scientific model-development or calibration
+campaign, first follow [shinka-model-development](../shinka-model-development/SKILL.md).
+Existing source code supplies context; it does not establish approval of the
+scientific objective or calibration and validation plan. Use the approved plan to
+supply conversion details and reuse it for an unchanged campaign. Unrelated
+program optimization does not require the scientist interview.
+
 Start from freeform instructions, then ask follow-ups only if high-impact details are missing.
 
 Collect:
