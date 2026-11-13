@@ -205,6 +205,53 @@ def test_successful_worker_cannot_leave_running_descendants(tmp_path):
     pytest.fail("worker descendant survived stage cleanup")
 
 
+def test_dead_worker_group_permission_race_does_not_prevent_ledger_accounting(monkeypatch):
+    from shinka.modeling.pipeline import _stop
+
+    class DeadWorker:
+        pid = 123456
+
+        def is_alive(self):
+            return False
+
+        def kill(self):
+            pytest.fail("must not signal a reaped process by PID")
+
+    def denied(*args):
+        raise PermissionError("sandbox denies former group")
+
+    monkeypatch.setattr(os, "killpg", denied)
+    _stop(DeadWorker())
+    _stop(DeadWorker())  # Repeated cleanup must remain safe.
+
+
+def test_live_worker_group_permission_failure_is_explicit(monkeypatch):
+    from shinka.modeling.pipeline import _stop
+
+    class LiveWorker:
+        pid = 123456
+        alive = True
+
+        def is_alive(self):
+            return self.alive
+
+        def kill(self):
+            self.alive = False
+
+        def join(self, timeout):
+            pass
+
+    def denied(*args):
+        raise PermissionError("sandbox denies live group")
+
+    worker = LiveWorker()
+    monkeypatch.setattr(os, "killpg", denied)
+    with pytest.raises(RuntimeError, match="descendants may remain"):
+        _stop(worker)
+    assert not worker.alive
+    _stop(worker)  # A second cleanup cannot replace the original error.
+
+
 def test_map_cannot_claim_posterior_samples(tmp_path):
     result = CalibrationPipeline(Ledger(tmp_path / "ledger.sqlite"), tmp_path / "artifacts").evaluate(
         request_for(), mislabeled_map

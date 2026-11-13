@@ -23,6 +23,7 @@ def _worker(connection, calibrate, request, artifact_dir):
     # On POSIX this lets timeout cleanup stop descendants as well as the worker.
     if hasattr(os, "setsid"):
         os.setsid()
+    notice_sent = False
     try:
         result = calibrate(request, artifact_dir)
         if not isinstance(result, CalibrationResult):
@@ -39,36 +40,51 @@ def _worker(connection, calibrate, request, artifact_dir):
         # Large pipe messages can block recv() after poll() signals only the
         # first bytes. Send a tiny notice after the complete file is available.
         connection.send((True, None))
+        notice_sent = True
     except BaseException:
         connection.send((False, traceback.format_exc(limit=12).encode()[-3000:].decode(errors="replace")))
+        notice_sent = True
     finally:
+        # Keep the group leader owned and alive until the controller cleans up
+        # the whole group. Reaping the leader first can make killpg fail with
+        # EPERM under macOS sandbox rules, even for a group we just created.
+        if notice_sent:
+            try:
+                connection.recv()
+            except (EOFError, OSError):
+                pass
         connection.close()
 
 
 def _stop(process):
     if process.pid is None:
         return
-    # The leader can have exited while solver subprocesses remain alive.
+    # A completion notice leaves the leader waiting for controller cleanup.
+    # Kill the complete group in one operation: TERM followed by join/reaping
+    # and a later KILL would recreate the dead-leader permissions race.
     group_stopped = False
     if hasattr(os, "killpg"):
         try:
-            os.killpg(process.pid, signal.SIGTERM)
+            os.killpg(process.pid, signal.SIGKILL)
             group_stopped = True
         except ProcessLookupError:
             pass
-    if process.is_alive():
-        if not group_stopped:
-            process.terminate()
-        process.join(0.5)
-    if group_stopped:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        except PermissionError as exc:
+            if not process.is_alive():
+                # A crashed or previously reaped worker no longer grants a
+                # sandbox permission to address its former process group.
+                return
+            # Stop the owned leader if possible, but do not claim descendants
+            # were cleaned up when permission to signal their group failed.
+            process.kill()
+            process.join(0.5)
+            raise RuntimeError("permission denied cleaning up a live worker process group; descendants may remain") from exc
     if process.is_alive():
         if not group_stopped:
             process.kill()
         process.join(0.5)
+    if process.is_alive():
+        raise RuntimeError("calibration worker survived forced cleanup")
 
 
 def _verify_source(candidate):
@@ -142,7 +158,7 @@ class CalibrationPipeline:
             return record
         started = time.monotonic()
         context = multiprocessing.get_context("spawn")
-        reader, writer = context.Pipe(duplex=False)
+        reader, writer = context.Pipe(duplex=True)
         process = context.Process(target=_worker, args=(writer, calibrate, request, str(artifact_dir)))
         try:
             artifact_dir.mkdir(parents=True, exist_ok=False)
@@ -164,7 +180,6 @@ class CalibrationPipeline:
                     f"User constraints at evaluation start: version={constraint_snapshot.version}, sha256={constraint_snapshot.sha256}",
                 ))
             # A callback may return before children exit; no process survives a stage.
-            process.join(min(0.1, max(0.0, request.stage.max_seconds - (time.monotonic() - started))))
             _stop(process)
             return self.ledger.complete(request.cache_key, result, time.monotonic() - started)
         except Exception as exc:

@@ -116,3 +116,29 @@ def test_live_promotion_waits_for_batch_and_keeps_final_test_closed(tmp_path):
     assert (root / "final_test.json").exists()
     with pytest.raises(RuntimeError, match="finalized"):
         evaluate(candidate, tmp_path / "later-metrics", root)
+
+
+def test_pending_constraint_review_does_not_stop_other_promotions(tmp_path):
+    from examples.model_calibration.evaluate import evaluate, open_ledger
+    from examples.model_calibration.promote import run as promote
+    from shinka.modeling import CalibrationPipeline
+    from shinka.modeling.constraints import ConstraintBook
+
+    root = tmp_path / "campaign"
+    for degree in (1, 2):
+        candidate = tmp_path / f"candidate-{degree}.py"
+        candidate.write_text(f"MODEL_SPEC = {{'degree': {degree}, 'hypothesis': 'Synthetic check'}}\n")
+        evaluate(candidate, tmp_path / f"metrics-{degree}", root)
+    ledger = open_ledger(root)
+    records = ledger.records()
+    book = ConstraintBook(tmp_path / "constraints")
+    book.initialize("Use the scientist-reviewed observation units.")
+    permitted = records[1].request.candidate.source_sha
+    book.review_compliance(permitted, True, "Observation units checked", "trusted scientist")
+    CalibrationPipeline(ledger, root / "artifacts", constraints=book)
+    result = promote(root, minimum_screens=2, make_plot=False)
+    assert result["status"] == "promotion_complete"
+    promoted = [r for r in ledger.records() if r.request.stage.name != "screen"]
+    assert len(promoted) == 2
+    assert all(r.request.candidate.source_sha == permitted for r in promoted)
+    assert any(event["kind"] == "review_requested" for event in book.events())
